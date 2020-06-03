@@ -7,6 +7,8 @@ OBJ_MAP = {"AGENT": 0, "AV": 1, "OTHERS": 2}
 
 def load_features(path: str = './2645.save'):
     '''
+    TODO: Rotate the coordinate system based on the last observed location
+
     @input path (str): path to trag_list
 
     @return feature (list) shape of (nums_of_obj): feature of all subgraph, each item in list has shape (len(obj_traj) - 1, 7)
