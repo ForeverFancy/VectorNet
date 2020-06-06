@@ -18,40 +18,50 @@ def load_features(path: str = './2645.save'):
 
     features = []
     for i in range(len(traj_list)):
-        vec = build_vector(traj_list[i], i)
+        vec, ground_truth = build_vector(traj_list[i], i)
         # print(vec.shape)
         features.append(vec)
     padding_features, mask = padding_trajectory(features)
     return padding_features, mask
 
 
-def build_vector(tarj: np.ndarray, id: int):
+def build_vector(traj: np.ndarray, id: int):
     '''
+    build vectors based on the input trajectory
+
     @input tarj (np.ndarray): tarject of one object
 
     @input id (int): j in the paper, integer id of P_j, indicating v_i is in P_j 
 
     @return vector (np.ndarray) shape of (len(traj) - 1, 7): vector build by tarjectory, each row contains (x_start, y_start, x_end, y_end, obj_type, time_stamp, j)
+
+    @return ground_truth (np.ndarray): return groundtruth trajectory if the input is an agent, otherwise return None
     '''
     # print(len(tarj))
     # print(tarj)
-    vector = np.zeros((len(tarj) - 1, 7))
+    ground_truth = None
+    vector = np.zeros((len(traj) - 1, 7))
 
     # start coordinates (x_start, y_start)
-    vector[:, 0] = tarj[:, 3][:-1]
-    vector[:, 1] = tarj[:, 4][:-1]
+    vector[:, 0] = traj[:, 3][:-1]
+    vector[:, 1] = traj[:, 4][:-1]
 
     # end coordinates (x_end, y_end)
-    vector[:, 2] = tarj[:, 3][1:]
-    vector[:, 3] = tarj[:, 4][1:]
+    vector[:, 2] = traj[:, 3][1:]
+    vector[:, 3] = traj[:, 4][1:]
 
     # obj_type, time_stamp, j
-    vector[:, 4] = OBJ_MAP[tarj[0, 2]]
-    vector[:, 5] = tarj[:, 0][:-1] - min(tarj[:, 0][:-1])
+    vector[:, 4] = OBJ_MAP[traj[0, 2]]
+    vector[:, 5] = traj[:, 0][:-1] - min(traj[:, 0][:-1])
     vector[:, 6] = id
 
+    if traj[0, 2] == "AGENT":
+        ground_truth = vector[np.where(vector[:, 5] > 2), :].squeeze(axis=0)
+        vector = vector[np.where(vector[:, 5] <= 2), :].squeeze(axis=0)
+        # print(vector.shape, ground_truth.shape)
+
     # print(vector)
-    return vector
+    return vector, ground_truth
 
 
 def padding_trajectory(features: list):
