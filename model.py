@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from layers import SubGraphLayer
+from layers import SelfAttentionLayer
 import numpy as np
 
 
@@ -21,8 +22,6 @@ class SubGraph(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         '''
-        TODO: input size not fixed, do padding?
-
         @input x of shape(batch_size, num_of_seqs, max_seq_size, in_features)
 
         @input mask of shape(batch_size, num_of_seqs, max_seq_size, in_features)
@@ -54,12 +53,11 @@ class GlobalGraph(nn.Module):
         Global graph model
         '''
         super(GlobalGraph, self).__init__()
-        self.Proj_Q = nn.Linear(in_features=in_features, out_features=out_features, bias=False)
-        self.Proj_K = nn.Linear(in_features=in_features, out_features=out_features, bias=False)
-        self.Proj_V = nn.Linear(in_features=in_features, out_features=out_features, bias=False)
-        self.softmax = nn.Softmax(dim=2)
+        self.in_features = in_features
+        self.out_features = out_features
+        self.attention_layer = SelfAttentionLayer(self.in_features, self.out_features)
 
-    def forward(self, query: torch.Tensor, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, query: torch.Tensor, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         '''
         Do self-attention
 
@@ -71,22 +69,14 @@ class GlobalGraph(nn.Module):
 
         @return out of shape(batch_size, num_of_nodes, 2 * hidden_size): self-attention output
         '''
-        P_q = self.Proj_Q(query)
-        P_k = self.Proj_K(x)
-        P_v = self.Proj_V(x)
-        # print(attention_mask, attention_mask.shape)
-        out = torch.bmm(P_q, P_k.transpose(1, 2))
-        print(out.shape, attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1).shape)
-        # mask for self attention
-        out = out.masked_fill(attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1) == 0, -1e9)
-        out = torch.bmm(self.softmax(out), P_v)
+        out = self.attention_layer.forward(query, x, attention_mask)
         return out
 
 
 class TrajectoryDecoder(nn.Module):
     def __init__(self, in_features: int = 128, out_features: int = 2):
         '''
-        Decode future trajectory
+        Decode future trajectories
         '''
         super(TrajectoryDecoder, self).__init__()
         self.linear = nn.Linear(in_features=in_features, out_features=out_features, bias=True)

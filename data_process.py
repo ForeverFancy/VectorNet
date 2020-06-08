@@ -158,16 +158,18 @@ def global_padding(feature_list: list, mask_list: list):
     return features, subgraph_mask, attention_mask
 
 
-def handle_ground_truth(groundtruth_list: list):
+def handle_ground_truth(groundtruth_list: list, max_groundtruth_length: int = 30):
     '''
     @input groundtruth_list (list): input groundtruth
+
+    @input max_groundtruth_length (int): maximum length of groundtruth, default is 30 (padding to the same length)
 
     @return groundtruth (np.ndarray) of shape (len(groundtruth_list), max_groundtruth_length * 4): each contains (x_start, y_start, x_end, y_end) 
 
     @return groundtruth_mask (np.ndarray) of shape (len(groundtruth_list), max_groundtruth_length * 4): mask where is not padding
     '''
     groundtruth_length = [gt.shape[0] for gt in groundtruth_list]
-    max_groundtruth_length = max(groundtruth_length)
+    max_groundtruth_length = max(groundtruth_length) if max_groundtruth_length is None else max_groundtruth_length
     groundtruth = np.zeros((len(groundtruth_list), max_groundtruth_length * 4))
     groundtruth_mask = np.zeros((len(groundtruth_list), max_groundtruth_length * 4))
     # print("-" * 80)

@@ -19,8 +19,6 @@ class SubGraphLayer(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         '''
-        TODO: input size not fixed, do padding?
-
         @input x of shape (batch_size, num_of_seqs, max_seq_size, in_features)
 
         @input mask of shape (batch_size, num_of_seqs, max_seq_size)
@@ -62,3 +60,51 @@ class SubGraphLayer(nn.Module):
         y, _ = torch.max(x, dim=2)
         # print(y.unsqueeze(2).shape)
         return y.unsqueeze(2)
+
+
+class SelfAttentionLayer(nn.Module):
+    def __init__(self, in_features: int = 128, out_features: int = 128):
+        '''
+        Self-attention layer
+        '''
+        super(SelfAttentionLayer, self).__init__()
+        self.Proj_Q = nn.Linear(
+            in_features=in_features,
+            out_features=out_features,
+            bias=False
+        )
+        self.Proj_K = nn.Linear(
+            in_features=in_features,
+            out_features=out_features,
+            bias=False
+        )
+        self.Proj_V = nn.Linear(
+            in_features=in_features,
+            out_features=out_features,
+            bias=False
+        )
+        self.softmax = nn.Softmax(dim=2)
+    
+    def forward(self, query: torch.Tensor, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        '''
+        Do self-attention
+
+        @input query of shape(batch_size, 1, 2 * hidden_size): agent features
+
+        @input x of shape (batch_size, num_of_nodes, 2 * hidden_size): all polyline node features
+
+        @input attention_mask of shape (batch_size, num_of_nodes): mask for self attention
+
+        @return out of shape(batch_size, num_of_nodes, 2 * hidden_size): self-attention output
+        '''
+        P_q = self.Proj_Q(query)
+        P_k = self.Proj_K(x)
+        P_v = self.Proj_V(x)
+        # print(attention_mask, attention_mask.shape)
+        out = torch.bmm(P_q, P_k.transpose(1, 2))
+        print(out.shape, attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1).shape)
+        # mask for self attention
+        if attention_mask is not None:
+            out = out.masked_fill(attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1) == 0, -1e9)
+        out = torch.bmm(self.softmax(out), P_v)
+        return out
