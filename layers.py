@@ -102,7 +102,7 @@ class SelfAttentionLayer(nn.Module):
         P_v = self.Proj_V(x)
         # print(attention_mask, attention_mask.shape)
         out = torch.bmm(P_q, P_k.transpose(1, 2))
-        print(out.shape, attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1).shape)
+        # print(out.shape, attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1).shape)
         # mask for self attention
         if attention_mask is not None:
             out = out.masked_fill(attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1) == 0, -1e9)

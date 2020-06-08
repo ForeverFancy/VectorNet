@@ -4,88 +4,307 @@ import argparse
 from model import *
 from torch.utils.data import RandomSampler, DataLoader, SequentialSampler
 from tqdm import tqdm
+from data_process import *
+from sklearn.model_selection import train_test_split
+from transformers import get_linear_schedule_with_warmup
 
 
-def train(epochs, subgraph_learning_rate, globalgraph_learning_rate, dataset, batch_size=1, save_steps=20, device="cpu"):
+def train(args, train_dataset, test_dataset):
+    device = torch.device("cuda" if torch.cuda.is_available()
+                          and args.no_cuda else "cpu")
     subgraph = SubGraph()
-    globalgraph = SubGraph()
+    globalgraph = GlobalGraph()
+    decoder = TrajectoryDecoder(out_features=args.max_groundtruth_length * 4)
+
     subgraph.to(device)
     subgraph.train()
     subgraph.zero_grad()
     globalgraph.to(device)
     globalgraph.train()
     globalgraph.zero_grad()
+    decoder.to(device)
+    decoder.train()
+    decoder.zero_grad()
 
-    subgraph_optimizer = torch.optim.Adam(
-        subgraph.parameters(), lr=subgraph_learning_rate)
-    globalgraph_optimizer = torch.optim.Adam(
-        globalgraph.parameters(), lr=globalgraph_learning_rate)
+    subgraph_optimizer = torch.optim.AdamW(
+        subgraph.parameters(), lr=args.subgraph_learning_rate)
+    globalgraph_optimizer = torch.optim.AdamW(
+        globalgraph.parameters(), lr=args.globalgraph_learning_rate)
+    decoder_optimizer = torch.optim.AdamW(
+        decoder.parameters(), lr=args.decoder_learning_rate)
+    
+    train_sampler = RandomSampler(train_dataset)
+    train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
 
-    mse_loss = nn.MSELoss()
-    total_loss = 0.0
+    t_total = len(train_dataloader) * args.epochs
+    subgraph_scheduler = get_linear_schedule_with_warmup(subgraph_optimizer, num_warmup_steps=0, num_training_steps=t_total)
+    globalgraph_scheduler = get_linear_schedule_with_warmup(globalgraph_optimizer, num_warmup_steps=0, num_training_steps=t_total)
+    decoder_scheduler = get_linear_schedule_with_warmup(decoder_optimizer, num_warmup_steps=0, num_training_steps=t_total)
 
-    train_sampler = RandomSampler(dataset)
-    train_dataloader = DataLoader(
-        dataset, batch_sampler=train_sampler, batch_size=batch_size, shuffle=True)
+    if args.saving_path is not None:
+        if os.path.isfile(os.path.join(args.saving_path, "subgraph.pt")):
+            subgraph.load_state_dict(torch.load(os.path.join(args.saving_path, "subgraph.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "globalgraph.pt")):
+            globalgraph.load_state_dict(torch.load(os.path.join(args.saving_path, "globalgraph.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "decoder.pt")):
+            decoder.load_state_dict(torch.load(os.path.join(args.saving_path, "decoder.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "subgraph.pt")):
+            subgraph_optimizer.load_state_dict(torch.load(os.path.join(args.saving_path, "subgraph_optimizer.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "globalgraph.pt")):
+            globalgraph_optimizer.load_state_dict(torch.load(os.path.join(args.saving_path, "globalgraph_optimizer.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "decoder.pt")):
+            decoder_optimizer.load_state_dict(torch.load(os.path.join(args.saving_path, "decoder_optimizer.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "subgraph.pt")):
+            subgraph_scheduler.load_state_dict(torch.load(os.path.join(args.saving_path, "subgraph_scheduler.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "globalgraph.pt")):
+            globalgraph_scheduler.load_state_dict(torch.load(os.path.join(args.saving_path, "globalgraph_scheduler.pt")))
+        if os.path.isfile(os.path.join(args.saving_path, "decoder.pt")):
+            decoder_scheduler.load_state_dict(torch.load(os.path.join(args.saving_path, "decoder_scheduler.pt")))
 
-    for i in range(epochs):
-        print("-" * 80)
-        print("*** Begin epoch {} ***".format(i + 1))
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration")
+    mse_loss = nn.MSELoss(reduction="mean")
+    total_loss, logging_loss = 0.0, 0.0
+    global_steps = 1
+
+    for i in tqdm(range(args.epochs), desc='Epoch: '):
         subgraph.zero_grad()
         globalgraph.zero_grad()
-        for step, batch in enumerate(epoch_iterator):
-            features, mask = batch
-            out = subgraph.forward(features, mask)
-            # print(out.shape)
-            out = globalgraph.forward(out)
-            loss = mse_loss(out)
+        decoder.zero_grad()
+        
+        for step, batch in enumerate(train_dataloader):
+            features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask = batch
+
+            features.to(device)
+            subgraph_mask.to(device)
+            attention_mask.to(device)
+            groundtruth.to(device)
+            groundtruth_mask.to(device)
+
+            out = subgraph.forward(features, subgraph_mask)
+            out = globalgraph.forward(out[:, 0, :].unsqueeze(dim=1), out, attention_mask)
+
+            pred = decoder.forward(out).squeeze(1)
+            loss = mse_loss.forward(pred * groundtruth_mask, groundtruth)
             loss.backward()
 
             total_loss += loss.item()
+            if global_steps % args.logging_steps == 0:
+                print("\nLoss:\t {}".format(
+                    (total_loss-logging_loss)/args.logging_steps))
+                logging_loss = total_loss
 
-            if (step + 1) % save_steps == 0:
-                torch.save(subgraph.state_dict(), "./save/subgraph.pt")
-                torch.save(subgraph_optimizer.state_dict(),
-                           "./save/subgraph_optimizer.pt")
-                torch.save(globalgraph.state_dict(), "./save/globalgraph.pt")
-                torch.save(globalgraph_optimizer.state_dict(),
-                           "./save/globalgraph_optimizer.pt")
+            if global_steps % args.saving_steps == 0:
+                save_model((subgraph, globalgraph, decoder, subgraph_optimizer, globalgraph_optimizer, decoder_optimizer, subgraph_scheduler, globalgraph_scheduler, decoder_scheduler))
             
             subgraph_optimizer.step()
             globalgraph_optimizer.step()
+            decoder_optimizer.step()
+            subgraph_scheduler.step()
+            globalgraph_scheduler.step()
+            decoder_scheduler.step()
             subgraph.zero_grad()
             globalgraph.zero_grad()
+            decoder.zero_grad()
+
+            global_steps += 1
+
+    if test_dataset is not None:
+        evaluate((subgraph, globalgraph, decoder), test_dataset, batch_size=args.eval_batch_size, device=device)
+    save_model((subgraph, globalgraph, decoder, subgraph_optimizer, globalgraph_optimizer,
+                decoder_optimizer, subgraph_scheduler, globalgraph_scheduler, decoder_scheduler))
 
 
 def evaluate(models, dataset: torch.utils.data.TensorDataset, batch_size=1, device="cpu"):
+    print("-" * 80)
+    print("*** Evaluating ***")
     eval_sampler = SequentialSampler(dataset)
     eval_dataloader = DataLoader(
         dataset, sampler=eval_sampler, batch_size=batch_size)
     
-    subgraph, globalgraph = models
+    subgraph, globalgraph, decoder = models
     subgraph.eval()
     globalgraph.eval()
+    decoder.eval()
 
     mse_loss = nn.MSELoss()
     total_loss = 0.0
-    
 
     for batch in tqdm(eval_dataloader, desc="Evaluating"):
         with torch.no_grad():
-            features, mask = batch
-            out = subgraph.forward(features, mask)
-            # print(out.shape)
-            out = globalgraph.forward(out)
-            loss = mse_loss(out)
+            features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask = batch
+
+            features.to(device)
+            subgraph_mask.to(device)
+            attention_mask.to(device)
+            groundtruth.to(device)
+            groundtruth_mask.to(device)
+
+            out = subgraph.forward(features, subgraph_mask)
+            out = globalgraph.forward(out[:, 0, :].unsqueeze(dim=1), out, attention_mask)
+
+            pred = decoder.forward(out).squeeze(1)
+            loss = mse_loss.forward(pred * groundtruth_mask, groundtruth)
             total_loss += loss.item()
-            
-    print("-" * 80)
+  
     print("Eval mse loss: {}".format(total_loss/len(dataset)))
+    print("-" * 80)
+
+
+def save_model(models: tuple):
+    subgraph, globalgraph, decoder, subgraph_optimizer, globalgraph_optimizer, decoder_optimizer, subgraph_scheduler, globalgraph_scheduler, decoder_scheduler = models
+    torch.save(subgraph.state_dict(), "./save/models/subgraph.pt")
+    torch.save(globalgraph.state_dict(), "./save/models/globalgraph.pt")
+    torch.save(decoder.state_dict(), "./save/models/decoder.pt")
+    torch.save(subgraph_optimizer.state_dict(), "./save/models/subgraph_optimizer.pt")
+    torch.save(globalgraph_optimizer.state_dict(), "./save/models/globalgraph_optimizer.pt")
+    torch.save(decoder_optimizer.state_dict(), "./save/models/decoder_optimizer.pt")
+    torch.save(subgraph_scheduler.state_dict(), "./save/models/subgraph_scheduler.pt")
+    torch.save(globalgraph_scheduler.state_dict(), "./save/models/globalgraph_scheduler.pt")
+    torch.save(decoder_scheduler.state_dict(), "./save/models/decoder_scheduler.pt")
+
+
+def build_dataset(features: np.ndarray, subgraph_mask: np.ndarray, attention_mask: np.ndarray, groundtruth: np.ndarray, groundtruth_mask: np.ndarray):
+    print("-" * 80)
+    print("*** Building dataset ***")
+
+    train_features, test_features, train_subgraph_mask, test_subgraph_mask, train_attention_mask, test_attention_mask, train_groundtruth, test_groundtruth, train_groundtruth_mask, test_groundtruth_mask = train_test_split(features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask, train_size=0.8)
+
+    train_features = torch.from_numpy(train_features).to(dtype=torch.float)
+    train_subgraph_mask = torch.from_numpy(
+        train_subgraph_mask).to(dtype=torch.float)
+    train_attention_mask = torch.from_numpy(
+        train_attention_mask).to(dtype=torch.float)
+    train_groundtruth = torch.from_numpy(
+        train_groundtruth).to(dtype=torch.float)
+    train_groundtruth_mask = torch.from_numpy(
+        train_groundtruth_mask).to(dtype=torch.float)
+
+    test_features = torch.from_numpy(test_features).to(dtype=torch.float)
+    test_subgraph_mask = torch.from_numpy(
+        test_subgraph_mask).to(dtype=torch.float)
+    test_attention_mask = torch.from_numpy(
+        test_attention_mask).to(dtype=torch.float)
+    test_groundtruth = torch.from_numpy(test_groundtruth).to(dtype=torch.float)
+    test_groundtruth_mask = torch.from_numpy(
+        test_groundtruth_mask).to(dtype=torch.float)
+    train_dataset = torch.utils.data.TensorDataset(
+        train_features,
+        train_subgraph_mask,
+        train_attention_mask,
+        train_groundtruth,
+        train_groundtruth_mask
+    )
+
+    test_dataset = torch.utils.data.TensorDataset(
+        test_features,
+        test_subgraph_mask,
+        test_attention_mask,
+        test_groundtruth,
+        test_groundtruth_mask
+    )
+    print("*** Finish building dataset ***")
+    return train_dataset, test_dataset
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run VectorNet training and evaluating")
+    parser.add_argument(
+        "--epochs",
+        default=10,
+        type=int,
+        help="Number of training epochs"
+    )
+    parser.add_argument(
+        "--subgraph_learning_rate",
+        default=1,
+        type=float,
+        help="Learning rate for subgraph"
+    )
+    parser.add_argument(
+        "--globalgraph_learning_rate",
+        default=1,
+        type=float,
+        help="Learning rate for globalgraph"
+    )
+    parser.add_argument(
+        "--decoder_learning_rate",
+        default=1,
+        type=float,
+        help="Learning rate for decoder"
+    )
+    parser.add_argument(
+        "--root_dir",
+        default=None,
+        required=True,
+        type=str,
+        help="Path to data root directory"
+    )
+    parser.add_argument(
+        "--feature_path",
+        default="./save/features",
+        type=str,
+        help="Path to feature directory"
+    )
+    parser.add_argument(
+        "--saving_path",
+        default="./save",
+        type=str,
+        help="Path to save model"
+    )
+    parser.add_argument(
+        "--logging_steps",
+        default=10,
+        type=int,
+        help="Number of logging steps"
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        default=0,
+        type=int,
+        help="Number of warmup steps"
+    )
+    parser.add_argument(
+        "--saving_steps",
+        default=10,
+        type=int,
+        help="Number of saving steps"
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        type=str,
+        help="Device to use"
+    )
+    parser.add_argument(
+        "--no_cuda", 
+        action="store_true",
+        help="Whether not to use CUDA when available"
+    )
+    parser.add_argument(
+        "--max_groundtruth_length",
+        default=30,
+        help="Maximum length of groundtruth"
+    )
+    parser.add_argument(
+        "--train_batch_size",
+        default=2,
+        help="train batch size"
+    )
+    parser.add_argument(
+        "--eval_batch_size",
+        default=1,
+        help="eval batch size"
+    )
+
+    args = parser.parse_args()
+    features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask = load_features(root_dir=args.root_dir, feature_path=args.feature_path)
+
+    train_dataset, test_dataset = build_dataset(
+        features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask)
+    
+    train(args, train_dataset, test_dataset)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Run VectorNet training and evaluating")
-    args = parser.parse_args()
-    # train(args)
+    main()
+    

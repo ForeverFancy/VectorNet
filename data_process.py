@@ -1,11 +1,14 @@
 import numpy as np
 import pickle
+from argoverse.data_loading.argoverse_forecasting_loader import ArgoverseForecastingLoader
+import pandas as pd
+import os
 
 
 OBJ_MAP = {"AGENT": 0, "AV": 1, "OTHERS": 2}
 
 
-def load_features(paths: list):
+def load_features(root_dir: str, feature_path: str = None):
     '''
     load features from paths
 
@@ -21,6 +24,18 @@ def load_features(paths: list):
 
     @return groundtruth (np.ndarray): mask for real groundtruth (split padding)
     '''
+    if feature_path is None:
+        load_raw_data(root_dir)
+        paths = os.listdir("./save/features")
+        paths = [os.path.join("./save/features", p) for p in paths if p.endswith(".save")]
+    else:
+        paths = os.listdir(feature_path)
+        paths = [os.path.join(feature_path, p)
+                 for p in paths if p.endswith(".save")]
+        if len(paths) == 0:
+            load_raw_data(root_dir)
+            paths = os.listdir(feature_path)
+            paths = [os.path.join(feature_path, p) for p in paths if p.endswith(".save")]
     groundtruth_list = []
     padding_features_list = []
     mask_list = []
@@ -31,19 +46,15 @@ def load_features(paths: list):
         features = []
         for i in range(len(traj_list)):
             vec, ground_truth = build_vector(traj_list[i], i)
-            # print(vec.shape)
             features.append(vec)
             if ground_truth is not None:
                 groundtruth_list.append(ground_truth)
                 agent_index = i
 
         padding_features, mask = padding_trajectory(features, agent_index)
-        # print(padding_features.shape, mask.shape)
         padding_features_list.append(padding_features)
         mask_list.append(mask)
-    # print(agent_index)
     features, subgraph_mask, attention_mask = global_padding(padding_features_list, mask_list)
-    # print(features.shape, subgraph_mask.shape, attention_mask.shape)
 
     groundtruth, groundtruth_mask = handle_ground_truth(groundtruth_list)
     return features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask
@@ -82,9 +93,7 @@ def build_vector(traj: np.ndarray, id: int):
     if traj[0, 2] == "AGENT":
         ground_truth = vector[np.where(vector[:, 5] > 2), :].squeeze(axis=0)
         vector = vector[np.where(vector[:, 5] <= 2), :].squeeze(axis=0)
-        # print(vector.shape, ground_truth.shape)
-
-    # print(vector)
+        
     return vector, ground_truth
 
 
@@ -107,10 +116,8 @@ def padding_trajectory(features: list, agent_index: int, max_seq_length: int = 4
         tmp = features[0]
         features[0] = features[agent_index]
         features[agent_index] = tmp
-        # print(features[0].shape, features[agent_index].shape)
 
     seq_length = [x.shape[0] for x in features]
-    # print(seq_length)
     max_seq_length = max(
         seq_length) if max_seq_length is not None else max_seq_length
     mask = np.zeros((len(features), max_seq_length))
@@ -120,7 +127,6 @@ def padding_trajectory(features: list, agent_index: int, max_seq_length: int = 4
         mask[i, feature.shape[0]:] = 0
         padding_features[i, :, :] = np.concatenate(
             (feature, np.zeros((max_seq_length - feature.shape[0], 7))), axis=0)
-    # print(padding_features, mask)
     return padding_features, mask
 
 
@@ -143,18 +149,16 @@ def global_padding(feature_list: list, mask_list: list):
     length = len(feature_list)
     num_of_seqs = [feature.shape[0] for feature in feature_list]
     maxnum_of_seqs = max(num_of_seqs)
-    # print(mask_list[0].shape)
     features = np.zeros((len(feature_list), maxnum_of_seqs,
                          feature_list[0].shape[1], feature_list[0].shape[2]))
     attention_mask = np.zeros((len(feature_list), maxnum_of_seqs))
     subgraph_mask = np.zeros((len(feature_list), maxnum_of_seqs, feature_list[0].shape[1]))
-    # print(features.shape)
+    
     for i, f in enumerate(feature_list):
         features[i, :, :, :] = np.concatenate(
             (f, np.zeros((maxnum_of_seqs - f.shape[0], f.shape[1], f.shape[2]))), axis=0)
         attention_mask[i, : f.shape[0]] = 1
         subgraph_mask[i, : f.shape[0], :] = mask_list[i]
-    # print(features, subgraph_mask , attention_mask)
     return features, subgraph_mask, attention_mask
 
 
@@ -172,15 +176,41 @@ def handle_ground_truth(groundtruth_list: list, max_groundtruth_length: int = 30
     max_groundtruth_length = max(groundtruth_length) if max_groundtruth_length is None else max_groundtruth_length
     groundtruth = np.zeros((len(groundtruth_list), max_groundtruth_length * 4))
     groundtruth_mask = np.zeros((len(groundtruth_list), max_groundtruth_length * 4))
-    # print("-" * 80)
-    # print(groundtruth_list)
+
     for i, gt in enumerate(groundtruth_list):
         groundtruth[i, : gt.shape[0] * 4] = gt[:, :4].reshape(-1, 1).squeeze(axis=1)
         groundtruth_mask[i, : gt.shape[0] * 4] = 1
-    # print(groundtruth)
+    
     return groundtruth, groundtruth_mask
-        # groundtruth[i, :] = gt
+
+
+def load_raw_data(root_dir: str, save_path: str = "./save/features"):
+    '''
+    Save raw csv to np.ndarray
+
+    @input root_dir (string): root directory contains .csv data
+
+    @input save_path (string): save features to this path, default "./save/features"
+    '''
+    afl = ArgoverseForecastingLoader(root_dir)
+    files = os.listdir(root_dir)
+    for f in files:
+        if not f.endswith(".csv"):
+            continue
+        seq_path = os.path.join(root_dir, f)
+        print("Processing " + seq_path)
+        id_list = afl.get(seq_path).track_id_list
+        agent_traj = afl.get(seq_path).agent_traj
+        df = afl.get(seq_path).seq_df
+        tarj_list = []
+        df['TIMESTAMP'] -= df['TIMESTAMP'].min()
+        for id in id_list:
+            subdf = df.loc[df['TRACK_ID'] == id]
+            tarj_list.append(subdf.drop(columns='CITY_NAME').sort_values(by=['TIMESTAMP']).to_numpy())
+        with open(os.path.join(save_path, f[:-4]+".save",), "wb") as f:
+            pickle.dump(tarj_list, f)
 
 
 if __name__ == "__main__":
-    load_features(paths=["2645.save", "3700.save"])
+    pass
+    
