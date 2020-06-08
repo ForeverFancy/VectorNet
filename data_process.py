@@ -12,7 +12,9 @@ def load_features(root_dir: str, feature_path: str = None):
     '''
     load features from paths
 
-    @input paths (list): path to trag_list
+    @input root_dir (str): path to raw data root directory
+
+    @input feature_path (str): path to saved features directory
 
     @return features (np.ndarray) of shape (num_of_paths, maxnum_of_global_nodes, maxnum_of_sub_nodes, 7): feature of all subgraph, padding to maxnum_of_seqs
 

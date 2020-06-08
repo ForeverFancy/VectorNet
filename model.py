@@ -41,9 +41,7 @@ class SubGraph(nn.Module):
 
         @return x of shape(batch_size, num_of_seqs, hidden_size * 2)
         '''
-        # TODO: change dim if input shape is not (*, hidden_size)
         y, _ = torch.max(x, dim=2)
-        # print(y.shape)
         return y
 
 

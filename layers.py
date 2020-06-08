@@ -26,9 +26,7 @@ class SubGraphLayer(nn.Module):
         @return out of shape (batch_size, num_of_seqs, max_seq_size, hidden_size * 2): output features
         '''
         x = self.encode(x)
-        # print(x.shape)
         ag = self.aggregate(x).repeat(1, 1, x.shape[2], 1)
-        # print(ag.shape)
         out = torch.cat([x, ag], dim=3)
         assert out.shape == (x.shape[0], x.shape[1], x.shape[2], self.hidden_size * 2)
         out = out * (mask.unsqueeze(dim=-1).repeat(1, 1, 1, self.hidden_size * 2))
@@ -56,9 +54,7 @@ class SubGraphLayer(nn.Module):
 
         @return x of shape (batch_size, num_of_seqs, hidden_size)
         '''
-        # TODO: change dim if input shape is not (*, hidden_size)
         y, _ = torch.max(x, dim=2)
-        # print(y.unsqueeze(2).shape)
         return y.unsqueeze(2)
 
 
@@ -100,9 +96,7 @@ class SelfAttentionLayer(nn.Module):
         P_q = self.Proj_Q(query)
         P_k = self.Proj_K(x)
         P_v = self.Proj_V(x)
-        # print(attention_mask, attention_mask.shape)
         out = torch.bmm(P_q, P_k.transpose(1, 2))
-        # print(out.shape, attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1).shape)
         # mask for self attention
         if attention_mask is not None:
             out = out.masked_fill(attention_mask.unsqueeze(1).expand(-1, query.shape[1], -1) == 0, -1e9)
