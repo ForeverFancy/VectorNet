@@ -11,7 +11,7 @@ from transformers import get_linear_schedule_with_warmup
 
 def train(args, train_dataset, test_dataset):
     device = torch.device("cuda" if torch.cuda.is_available()
-                          and args.no_cuda else "cpu")
+                          and not args.no_cuda else "cpu")
     subgraph = SubGraph()
     globalgraph = GlobalGraph()
     decoder = TrajectoryDecoder(out_features=args.max_groundtruth_length * 4)
