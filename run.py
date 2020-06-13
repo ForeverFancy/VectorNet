@@ -7,11 +7,13 @@ from tqdm import tqdm
 from data_process import *
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup
+import math
 
 
 def train(args, train_dataset, test_dataset):
     device = torch.device("cuda" if torch.cuda.is_available()
-                          and args.no_cuda else "cpu")
+                          and not args.no_cuda else "cpu")
+    print("*** Using device: " + str(device) + " ***")
     subgraph = SubGraph()
     globalgraph = GlobalGraph()
     decoder = TrajectoryDecoder(out_features=args.max_groundtruth_length * 4)
@@ -64,20 +66,23 @@ def train(args, train_dataset, test_dataset):
     mse_loss = nn.MSELoss(reduction="mean")
     total_loss, logging_loss = 0.0, 0.0
     global_steps = 1
+    print("-" * 80)
+    print("*** Begin training ***" )
 
     for i in tqdm(range(args.epochs), desc='Epoch: '):
         subgraph.zero_grad()
         globalgraph.zero_grad()
         decoder.zero_grad()
+        epoch_iterator = tqdm(train_dataloader, desc="Iteration")
         
-        for step, batch in enumerate(train_dataloader):
+        for step, batch in enumerate(epoch_iterator):
             features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask = batch
 
-            features.to(device)
-            subgraph_mask.to(device)
-            attention_mask.to(device)
-            groundtruth.to(device)
-            groundtruth_mask.to(device)
+            features = features.to(device)
+            subgraph_mask = subgraph_mask.to(device)
+            attention_mask = attention_mask.to(device)
+            groundtruth = groundtruth.to(device)
+            groundtruth_mask = groundtruth_mask.to(device)
 
             out = subgraph.forward(features, subgraph_mask)
             out = globalgraph.forward(out[:, 0, :].unsqueeze(dim=1), out, attention_mask)
@@ -87,8 +92,8 @@ def train(args, train_dataset, test_dataset):
             loss.backward()
 
             total_loss += loss.item()
-            if global_steps % args.logging_steps == 0:
-                print("\nLoss:\t {}".format(
+            if args.enable_logging and global_steps % args.logging_steps == 0:
+                print("\n\nLoss:\t {}".format(
                     (total_loss-logging_loss)/args.logging_steps))
                 logging_loss = total_loss
 
@@ -108,12 +113,12 @@ def train(args, train_dataset, test_dataset):
             global_steps += 1
 
     if test_dataset is not None:
-        evaluate((subgraph, globalgraph, decoder), test_dataset, batch_size=args.eval_batch_size, device=device)
+        evaluate(args, (subgraph, globalgraph, decoder), test_dataset, batch_size=args.eval_batch_size, device=device)
     save_model((subgraph, globalgraph, decoder, subgraph_optimizer, globalgraph_optimizer,
                 decoder_optimizer, subgraph_scheduler, globalgraph_scheduler, decoder_scheduler))
 
 
-def evaluate(models, dataset: torch.utils.data.TensorDataset, batch_size=1, device="cpu"):
+def evaluate(args, models, dataset: torch.utils.data.TensorDataset, batch_size=1, device="cpu"):
     print("-" * 80)
     print("*** Evaluating ***")
     eval_sampler = SequentialSampler(dataset)
@@ -132,11 +137,11 @@ def evaluate(models, dataset: torch.utils.data.TensorDataset, batch_size=1, devi
         with torch.no_grad():
             features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask = batch
 
-            features.to(device)
-            subgraph_mask.to(device)
-            attention_mask.to(device)
-            groundtruth.to(device)
-            groundtruth_mask.to(device)
+            features = features.to(device)
+            subgraph_mask = subgraph_mask.to(device)
+            attention_mask = attention_mask.to(device)
+            groundtruth = groundtruth.to(device)
+            groundtruth_mask = groundtruth_mask.to(device)
 
             out = subgraph.forward(features, subgraph_mask)
             out = globalgraph.forward(out[:, 0, :].unsqueeze(dim=1), out, attention_mask)
@@ -145,7 +150,7 @@ def evaluate(models, dataset: torch.utils.data.TensorDataset, batch_size=1, devi
             loss = mse_loss.forward(pred * groundtruth_mask, groundtruth)
             total_loss += loss.item()
   
-    print("Eval mse loss: {}".format(total_loss/len(dataset)))
+    print("Eval mse loss (per point): {}".format(math.sqrt(total_loss / (len(dataset) * args.max_groundtruth_length))))
     print("-" * 80)
 
 
@@ -210,25 +215,25 @@ def main():
         description="Run VectorNet training and evaluating")
     parser.add_argument(
         "--epochs",
-        default=10,
+        default=5,
         type=int,
         help="Number of training epochs"
     )
     parser.add_argument(
         "--subgraph_learning_rate",
-        default=1,
+        default=1e-3,
         type=float,
         help="Learning rate for subgraph"
     )
     parser.add_argument(
         "--globalgraph_learning_rate",
-        default=1,
+        default=1e-3,
         type=float,
         help="Learning rate for globalgraph"
     )
     parser.add_argument(
         "--decoder_learning_rate",
-        default=1,
+        default=1e-3,
         type=float,
         help="Learning rate for decoder"
     )
@@ -241,13 +246,13 @@ def main():
     )
     parser.add_argument(
         "--feature_path",
-        default="./save/features",
+        default=None,
         type=str,
         help="Path to feature directory"
     )
     parser.add_argument(
         "--saving_path",
-        default="./save",
+        default=None,
         type=str,
         help="Path to save model"
     )
@@ -265,15 +270,9 @@ def main():
     )
     parser.add_argument(
         "--saving_steps",
-        default=10,
+        default=100,
         type=int,
         help="Number of saving steps"
-    )
-    parser.add_argument(
-        "--device",
-        default="cpu",
-        type=str,
-        help="Device to use"
     )
     parser.add_argument(
         "--no_cuda", 
@@ -287,17 +286,27 @@ def main():
     )
     parser.add_argument(
         "--train_batch_size",
+        type=int,
         default=2,
         help="train batch size"
     )
     parser.add_argument(
         "--eval_batch_size",
+        type=int,
         default=1,
         help="eval batch size"
     )
+    parser.add_argument(
+        "--enable_logging",
+        action="store_true",
+        help="whether enable logging"
+    )
 
     args = parser.parse_args()
-    features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask = load_features(root_dir=args.root_dir, feature_path=args.feature_path)
+    print("*** Loading features ***")
+    features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask, max_groundtruth_length = load_features(root_dir=args.root_dir, feature_path=args.feature_path)
+    args.max_groundtruth_length = max_groundtruth_length
+    print("*** Finish loading features ***")
 
     train_dataset, test_dataset = build_dataset(
         features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask)

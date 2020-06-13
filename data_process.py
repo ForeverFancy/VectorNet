@@ -25,6 +25,8 @@ def load_features(root_dir: str, feature_path: str = None):
     @return groundtruth (np.ndarray): groundtruth for prediction
 
     @return groundtruth (np.ndarray): mask for real groundtruth (split padding)
+
+    @return max_groundtruth_length (int): max ground truth length
     '''
     if feature_path is None:
         load_raw_data(root_dir)
@@ -58,8 +60,8 @@ def load_features(root_dir: str, feature_path: str = None):
         mask_list.append(mask)
     features, subgraph_mask, attention_mask = global_padding(padding_features_list, mask_list)
 
-    groundtruth, groundtruth_mask = handle_ground_truth(groundtruth_list)
-    return features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask
+    groundtruth, groundtruth_mask, max_groundtruth_length = handle_ground_truth(groundtruth_list)
+    return features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask, max_groundtruth_length
 
 
 def build_vector(traj: np.ndarray, id: int):
@@ -164,7 +166,7 @@ def global_padding(feature_list: list, mask_list: list):
     return features, subgraph_mask, attention_mask
 
 
-def handle_ground_truth(groundtruth_list: list, max_groundtruth_length: int = 30):
+def handle_ground_truth(groundtruth_list: list, max_groundtruth_length: int = None):
     '''
     @input groundtruth_list (list): input groundtruth
 
@@ -173,6 +175,8 @@ def handle_ground_truth(groundtruth_list: list, max_groundtruth_length: int = 30
     @return groundtruth (np.ndarray) of shape (len(groundtruth_list), max_groundtruth_length * 4): each contains (x_start, y_start, x_end, y_end) 
 
     @return groundtruth_mask (np.ndarray) of shape (len(groundtruth_list), max_groundtruth_length * 4): mask where is not padding
+
+    @return max_groundtruth_length (int): max ground truth length
     '''
     groundtruth_length = [gt.shape[0] for gt in groundtruth_list]
     max_groundtruth_length = max(groundtruth_length) if max_groundtruth_length is None else max_groundtruth_length
@@ -183,7 +187,7 @@ def handle_ground_truth(groundtruth_list: list, max_groundtruth_length: int = 30
         groundtruth[i, : gt.shape[0] * 4] = gt[:, :4].reshape(-1, 1).squeeze(axis=1)
         groundtruth_mask[i, : gt.shape[0] * 4] = 1
     
-    return groundtruth, groundtruth_mask
+    return groundtruth, groundtruth_mask, max_groundtruth_length
 
 
 def load_raw_data(root_dir: str, save_path: str = "./save/features"):
