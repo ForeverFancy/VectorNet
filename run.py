@@ -28,11 +28,11 @@ def train(args, train_dataset, test_dataset, device):
     decoder.zero_grad()
 
     subgraph_optimizer = torch.optim.AdamW(
-        subgraph.parameters(), lr=args.subgraph_learning_rate)
+        subgraph.parameters(), lr=args.subgraph_learning_rate, weight_decay=1e-6)
     globalgraph_optimizer = torch.optim.AdamW(
-        globalgraph.parameters(), lr=args.globalgraph_learning_rate)
+        globalgraph.parameters(), lr=args.globalgraph_learning_rate, weight_decay=1e-6)
     decoder_optimizer = torch.optim.AdamW(
-        decoder.parameters(), lr=args.decoder_learning_rate)
+        decoder.parameters(), lr=args.decoder_learning_rate, weight_decay=1e-6)
     
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
@@ -126,7 +126,7 @@ def train(args, train_dataset, test_dataset, device):
 
 
 def evaluate(args, models, dataset: torch.utils.data.TensorDataset, device, batch_size=1):
-    print("*** Evaluating ***")
+    print("\n*** Evaluating ***\n")
     eval_sampler = SequentialSampler(dataset)
     eval_dataloader = DataLoader(
         dataset, sampler=eval_sampler, batch_size=batch_size)
