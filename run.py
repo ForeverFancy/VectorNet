@@ -3,17 +3,16 @@ import torch.nn as nn
 import argparse
 from model import *
 from torch.utils.data import RandomSampler, DataLoader, SequentialSampler
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from data_process import *
 from sklearn.model_selection import train_test_split
 from transformers import get_linear_schedule_with_warmup
 import math
+import os
 
 
-def train(args, train_dataset, test_dataset):
-    device = torch.device("cuda" if torch.cuda.is_available()
-                          and not args.no_cuda else "cpu")
-    print("*** Using device: " + str(device) + " ***")
+def train(args, train_dataset, test_dataset, device):
     subgraph = SubGraph()
     globalgraph = GlobalGraph()
     decoder = TrajectoryDecoder(out_features=args.max_groundtruth_length * 4)
@@ -35,7 +34,7 @@ def train(args, train_dataset, test_dataset):
     decoder_optimizer = torch.optim.AdamW(
         decoder.parameters(), lr=args.decoder_learning_rate)
     
-    train_sampler = RandomSampler(train_dataset)
+    train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
 
     t_total = len(train_dataloader) * args.epochs
@@ -44,6 +43,7 @@ def train(args, train_dataset, test_dataset):
     decoder_scheduler = get_linear_schedule_with_warmup(decoder_optimizer, num_warmup_steps=0, num_training_steps=t_total)
 
     if args.saving_path is not None:
+        print("*** Loading model from {} ***".format(args.saving_path))
         if os.path.isfile(os.path.join(args.saving_path, "subgraph.pt")):
             subgraph.load_state_dict(torch.load(os.path.join(args.saving_path, "subgraph.pt")))
         if os.path.isfile(os.path.join(args.saving_path, "globalgraph.pt")):
@@ -76,6 +76,10 @@ def train(args, train_dataset, test_dataset):
         epoch_iterator = tqdm(train_dataloader, desc="Iteration")
         
         for step, batch in enumerate(epoch_iterator):
+            subgraph.train()
+            globalgraph.train()
+            decoder.train()
+
             features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask = batch
 
             features = features.to(device)
@@ -92,12 +96,15 @@ def train(args, train_dataset, test_dataset):
             loss.backward()
 
             total_loss += loss.item()
-            if args.enable_logging and global_steps % args.logging_steps == 0:
+            if args.local_rank in [-1, 0] and args.enable_logging and global_steps % args.logging_steps == 0:
                 print("\n\nLoss:\t {}".format(
                     (total_loss-logging_loss)/args.logging_steps))
                 logging_loss = total_loss
+            
+            if args.local_rank in [-1, 0] and args.evaluate_during_training and global_steps % args.logging_steps == 0:
+                evaluate(args, (subgraph, globalgraph, decoder), test_dataset, batch_size=args.eval_batch_size, device=device)
 
-            if global_steps % args.saving_steps == 0:
+            if args.local_rank in [-1, 0] and global_steps % args.saving_steps == 0:
                 save_model((subgraph, globalgraph, decoder, subgraph_optimizer, globalgraph_optimizer, decoder_optimizer, subgraph_scheduler, globalgraph_scheduler, decoder_scheduler))
             
             subgraph_optimizer.step()
@@ -113,13 +120,12 @@ def train(args, train_dataset, test_dataset):
             global_steps += 1
 
     if test_dataset is not None:
-        evaluate(args, (subgraph, globalgraph, decoder), test_dataset, batch_size=args.eval_batch_size, device=device)
+        evaluate(args, (subgraph, globalgraph, decoder), test_dataset, device=device, batch_size=args.eval_batch_size)
     save_model((subgraph, globalgraph, decoder, subgraph_optimizer, globalgraph_optimizer,
                 decoder_optimizer, subgraph_scheduler, globalgraph_scheduler, decoder_scheduler))
 
 
-def evaluate(args, models, dataset: torch.utils.data.TensorDataset, batch_size=1, device="cpu"):
-    print("-" * 80)
+def evaluate(args, models, dataset: torch.utils.data.TensorDataset, device, batch_size=1):
     print("*** Evaluating ***")
     eval_sampler = SequentialSampler(dataset)
     eval_dataloader = DataLoader(
@@ -150,7 +156,7 @@ def evaluate(args, models, dataset: torch.utils.data.TensorDataset, batch_size=1
             loss = mse_loss.forward(pred * groundtruth_mask, groundtruth)
             total_loss += loss.item()
   
-    print("Eval mse loss (per point): {}".format(math.sqrt(total_loss / (len(dataset) * args.max_groundtruth_length))))
+    print("Eval mse loss (per point): {}".format(math.sqrt(total_loss / (len(dataset) // batch_size * args.max_groundtruth_length))))
     print("-" * 80)
 
 
@@ -301,8 +307,31 @@ def main():
         action="store_true",
         help="whether enable logging"
     )
+    parser.add_argument(
+        "--local_rank",
+        default=-1,
+        help="local rank for distributed training"
+    )
+    parser.add_argument(
+        "--evaluate_during_training",
+        action="store_true",
+        help="Run evaluation during training at each logging step"
+    )
 
     args = parser.parse_args()
+
+    if args.local_rank == -1 or args.no_cuda:
+        # Data parallel or CPU training
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+        args.n_gpu = 0 if args.no_cuda else torch.cuda.device_count()
+    else:
+        torch.cuda.set_device(args.local_rank)
+        device = torch.device("cuda", args.local_rank)
+        torch.distributed.init_process_group(backend="nccl")
+        args.n_gpu = 1
+
+    print("*** Process rank: {}, device: {}, n_gpu: {}, distributed training: {} ***".format(args.local_rank, device, args.n_gpu, bool(args.local_rank != -1)))
+
     print("*** Loading features ***")
     features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask, max_groundtruth_length = load_features(root_dir=args.root_dir, feature_path=args.feature_path)
     args.max_groundtruth_length = max_groundtruth_length
@@ -310,8 +339,8 @@ def main():
 
     train_dataset, test_dataset = build_dataset(
         features, subgraph_mask, attention_mask, groundtruth, groundtruth_mask)
-    
-    train(args, train_dataset, test_dataset)
+
+    train(args, train_dataset, test_dataset, device)
 
 
 if __name__ == "__main__":

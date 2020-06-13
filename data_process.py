@@ -37,7 +37,7 @@ def load_features(root_dir: str, feature_path: str = None):
         paths = [os.path.join(feature_path, p)
                  for p in paths if p.endswith(".save")]
         if len(paths) == 0:
-            load_raw_data(root_dir)
+            load_raw_data(root_dir, feature_path)
             paths = os.listdir(feature_path)
             paths = [os.path.join(feature_path, p) for p in paths if p.endswith(".save")]
     groundtruth_list = []
