@@ -18,13 +18,13 @@ Pytorch implementation of paper "VectorNet: Encoding HD maps and Agent Dynamics 
     └── models
 ```
 
-使用方法：
+使用示例：
 
 ```
-python3 run.py --root_dir PATH_TO_RAW_DATA --epochs 50
+python3 run.py --root_dir ../forecasting_sample/data/ --epochs 50 --feature_path ./save/features/ --logging_steps 50 --train_batch_size=16 --enable_logging
 ```
 
 Note:
 
-- 目前只用了数据集的 examples 中的 4 个样本进行训练，1 个样本进行验证；
-- 目前没有把整个模型的三部分压到一个文件中，有时间可以进行重构。
+- 目前没有把整个模型的三部分压到一个文件中，有时间可以进行重构；
+- 加入多卡支持。
